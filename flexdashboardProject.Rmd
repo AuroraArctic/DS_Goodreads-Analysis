@@ -1,0 +1,195 @@
+---
+title: "Shiny apps"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+  runtime: shiny
+---
+
+```{r global, include=FALSE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(shiny)
+library(DT)
+
+
+goodreads <- read.csv("good_reads_final.csv") %>%
+  mutate(author_genres = stringr::str_replace(author_genres,",","/")) %>%
+  separate(author_genres,into=c("first_genre","other_genre"),sep="/") %>%
+  mutate(other_genre = ifelse(is.na(other_genre) | other_genre=="", "unknown",other_genre)) %>%
+  mutate(other_genre = stringr::str_replace_all(other_genre,",","")) %>%
+  mutate(pages = as.integer(pages)) %>%
+  mutate(author_name = stringr::str_replace_all(author_name, "\n","")) %>%
+  mutate(birthplace = stringr::str_replace_all(birthplace, "\n",""))%>%
+  mutate(book_title = stringr::str_replace_all(book_title, "\n","")) %>%
+  mutate(first_genre = stringr::str_replace_all(first_genre,"-"," "),
+         other_genre = stringr::str_replace_all(other_genre,"-"," ")) %>%
+  mutate(birthplace = stringr::str_replace_all(birthplace, "  ","")) %>%
+  mutate(birthplace = ifelse(birthplace == "","unknown",birthplace)) %>%
+  separate(publish_date,into=c("other","year"),sep=-4) %>%
+  select(-other, -author_page_url,-book_fullurl) %>%
+  mutate(year = ifelse(year=="" | grepl("th",year),NA,year)) %>%
+  mutate(year = as.integer(year))
+
+top30countries <- goodreads %>%
+  select(birthplace, author_gender) %>%
+  count(birthplace, author_gender) %>%
+  filter(birthplace !="unknown") %>%
+  arrange(-n) %>%
+  head(30)
+
+countries<- sort(unique(top30countries$birthplace))
+```
+
+Top Writers per Country
+===============================
+
+Inputs {.sidebar}
+-------------------------------------
+```{r}
+selectInput("countries", "Paese:",choices = c("All",countries))
+```
+
+Column
+-------------------------------------
+### Grafico
+```{r}
+renderPlot({
+   dataset<-top30countries
+   if(input$countries =="All"){
+     ggplot(top30countries,aes(reorder(birthplace,-n),n))+
+       geom_bar(stat="identity", position="dodge", aes(fill=author_gender))+
+       geom_segment(aes(x=birthplace, 
+                        xend=birthplace, 
+                        y=min(n), 
+                        yend=max(n)), 
+                    linetype="dashed", 
+                    size=0.05,
+                    color="grey")+
+     coord_flip()+
+       theme_classic()
+   }else{
+     top30countries %>%
+       filter(grepl(input$countries,birthplace)) %>%
+       ggplot(aes(birthplace,n))+
+        geom_bar(stat="identity", position="dodge",aes(fill=author_gender))+
+        ggrepel::geom_label_repel(aes(label=n), position=position_dodge(width=0.5))+
+        coord_flip()+
+        theme_classic()
+   }
+})
+```
+### Grafico 2
+```{r}
+DT::renderDataTable({
+   if(input$countries == "All"){
+     authors %>%
+       inner_join(select(goodreads,author_name,first_genre,birthplace)) %>%
+       unique()
+   }else{
+   authors %>%
+     inner_join(select(goodreads,author_name,first_genre,birthplace)) %>%
+     unique() %>%
+     filter(grepl(input$countries,birthplace))
+  }
+})
+```
+
+Top Writers per Genre
+===============================
+
+Inputs {.sidebar}
+-------------------------------------
+```{r}
+selectInput("genre", "Genere:",choices = c("All",
+                                                    "Classics" ="classics",
+                                                    "Contemporary" = "contemporary",
+                                                    "Fantasy" = "fantasy",
+                                                    "Fiction" ="fiction",
+                                                    "Yound Adult" = "young adult",
+                                                    "Science Fiction" = "science fiction",
+                                                    "Romance" = "romance",
+                                                    "Mystery" = "mystery",
+                                                    "Historical" = "historical",
+                                                    "Nonfiction" = "nonfiction"))
+```
+
+Column
+-------------------------------------
+### Grafico
+```{r}
+renderPlot({
+     dataset<- goodreads %>%
+         select(author_name,first_genre,other_genre, author_rating_count,author_review_count) %>%
+         mutate(author_name = stringr::str_replace(author_name,"\n","")) %>%
+         group_by(author_name) %>%
+         summarise(first_genre = first(first_genre),
+                   other_genre = first(other_genre),
+                   ratings = sum(author_rating_count),
+                   reviews = sum(author_review_count)) %>%
+         mutate(first_genre = stringr::str_replace_all(first_genre,"-"," "),
+                other_genre = stringr::str_replace_all(other_genre,"-"," ")) %>%
+         arrange(-reviews)
+     
+     if(input$genre =="All"){
+       most_rated_authors <- dataset %>%
+         arrange(-ratings) %>%
+         head(n=10) %>%
+         gather("ratings","reviews", key="type",value="number")
+       
+       ggplot(most_rated_authors, aes(x=reorder(author_name,-number)))+
+         geom_bar(stat="identity", position="dodge",aes(y=number/1000000,fill=type)) +
+         labs(x = "Nome dell'autore", y="Numero di rating", title="Numero di valutazioni e recensioni (in milioni)")+
+         geom_text(aes(label=author_name), stat="count", size=5,angle=90, vjust=-0.5, hjust=-0.2)+
+         theme(axis.text.x=element_blank())
+     }else{
+       most_rated_authors <- dataset %>%
+         filter(grepl( input$genre,first_genre) | grepl(input$genre, other_genre)) %>%
+         arrange(-ratings) %>%
+         head(n=10) %>%
+         gather("ratings","reviews", key="type",value="number")
+       
+       if(input$genre == "contemporary"){
+       ggplot(most_rated_authors, aes(x=reorder(author_name,-number)))+
+         geom_bar(stat="identity", position="dodge",aes(y=number/1000000,fill=type)) +
+         labs(x = "Nome dell'autore", y="Numero di rating", title="Numero di valutazioni e recensioni (in milioni)")+
+         geom_text(aes(label=author_name), stat="count", size=5,angle=90, vjust =-0.2,hjust=2)+
+         theme(axis.text.x=element_blank()) 
+       }else{
+         ggplot(most_rated_authors, aes(x=reorder(author_name,-number)))+
+           geom_bar(stat="identity", position="dodge",aes(y=number/1000000,fill=type)) +
+           labs(x = "Nome dell'autore", y="Numero di rating", title="Numero di valutazioni e recensioni (in milioni)")+
+           geom_text(aes(label=author_name), stat="count", size=5,angle=90, vjust=-0.5, hjust=-0.1)+
+           theme(axis.text.x=element_blank()) 
+       }
+     }
+   })
+```
+
+Evolution of books through time
+===============================
+Inputs {.sidebar}
+-------------------------------------
+```{r}
+sliderInput("range", "Periodo storico:",
+                    min = -720, max = 2019,
+                    value = c(1000,2019))
+```
+
+Column
+-------------------------------------
+
+### Grafico 
+```{r}
+renderPlot({
+     goodreads %>%
+       filter(year>=input$range[1] & year<=input$range[2])%>%
+       group_by(year) %>%
+       summarise(n_books = n()) %>%
+       ggplot(aes(year,n_books))+
+         geom_line()
+   })
+```

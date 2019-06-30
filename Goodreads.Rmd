@@ -1,0 +1,448 @@
+---
+title: "Goodreads"
+author: "Aurora Maria Tumminello"
+output: html_document
+---
+
+#Goodreads
+
+```{r, warning=FALSE,message=FALSE}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(data.table)
+library(lubridate)
+
+```
+
+##Introduzione
+
+### Cos'è goodreads?
+Goodreads è un social network dedicato ai libri creato nel dicembre 2006 dallo sviluppatore di software e imprenditore statunitense Otis Chandler.
+
+Gli utenti, dopo la registrazione gratuita, possono aggiungere ai loro profili libri letti o da leggere, condividendo recensioni, commenti, votazioni, dati sull'acquisto e sulla lettura, suggerimenti con altri utenti, creare gruppi e partecipare a discussioni.
+
+###Il dataset
+
+Il dataset preso in considerazione è tratto da [kaggle.com`](https://kaggle.com) ed è composto da 20 colonne:
+
+* author_average_rating
+* author_gender
+* author_genres
+* author_id
+* author_name
+* author_page_url
+* author_rating_count
+* author_review_count
+* birthplace
+* book_average_rating
+* book_fullurl
+* book_id
+* book_title
+* genre1
+* genre2
+* num_ratings
+* num_reviews
+* pages
+* publish_date
+* score
+
+Per sistemare il dataset:
+
+1. Separare i generi dell'autore nel genere prevalente e altri; se non ha altri generi allora inserire "unknown"
+2. Convertire le pagine da factor a int
+3. Cancellare eventuali caratteri speciali nel titolo dei libri,negli autori e paese di provenienza
+4. Cancellare gli spazi dalla colonna del paese di provenienza; se è vuoto allora "unknown"
+5. Della publish_date prelevare gli ultimi 4 caratteri, ovvero l'anno di pubblicazione. Si potrebbe pensare di convertire l'anno in data, ma non avendo mese e giorno completi di tutti i testi è preferibile tenere l'anno. Da notare però come molti libri non abbiano nemmeno l'anno di pubblicazione. In quel caso si inserisce "NA". L'anno viene convertito in intero per l'ordinamento corretto. 
+
+```{r}
+# Leggere il csv
+goodreads <- read.csv("good_reads_final.csv")
+df <- goodreads
+
+# Cambiare codifica del file
+fwrite(df,"good.csv")
+goodreads<- fread("good.csv",encoding="UTF-8")
+
+# Modifiche elencate sopra
+goodreads<-goodreads %>%
+  mutate(author_genres = stringr::str_replace(author_genres,",","/")) %>%
+  separate(author_genres,into=c("first_genre","other_genre"),sep="/") %>%
+  mutate(other_genre = ifelse(is.na(other_genre) | other_genre=="", "unknown",other_genre)) %>%
+  mutate(other_genre = stringr::str_replace_all(other_genre,",","")) %>%
+  mutate(pages = as.integer(pages)) %>%
+  mutate(author_name = stringr::str_replace_all(author_name, "\n","")) %>%
+  mutate(birthplace = stringr::str_replace_all(birthplace, "\n",""))%>%
+  mutate(book_title = stringr::str_replace_all(book_title, "\n","")) %>%
+  mutate(first_genre = stringr::str_replace_all(first_genre,"-"," "),
+         other_genre = stringr::str_replace_all(other_genre,"-"," ")) %>%
+  mutate(birthplace = stringr::str_replace_all(birthplace, "  ","")) %>%
+  mutate(birthplace = ifelse(birthplace == "","unknown",birthplace)) %>%
+  separate(publish_date,into=c("other","year"),sep=-4) %>%
+  select(-other, -author_page_url,-book_fullurl) %>%
+  mutate(year = ifelse(year=="" | grepl("th",year),NA,year)) %>%
+  mutate(year = as.integer(year))
+
+head(goodreads,n=10)
+```
+
+##Quesiti
+###Quali sono gli autori più famosi?
+```{r}
+authors<-goodreads %>%
+  select(author_average_rating:birthplace, book_id) %>%
+  select(author_id, author_name,everything()) %>%
+  group_by(author_name, author_gender) %>%
+  summarise(ratings=sum(author_rating_count), reviews = sum(author_review_count),n_books=n()) %>%
+  arrange(-ratings, -reviews)
+
+authors
+```
+
+###Top 10 degli scrittori con valutazioni e recensioni a confronto
+```{r}
+most_rated_authors <- authors %>%
+  arrange(-ratings) %>%
+  head(n=10) %>%
+  gather("ratings","reviews", key="type",value="number")
+
+ggplot(most_rated_authors, aes(x=reorder(author_name,-number)))+
+  geom_bar(stat="identity", position="dodge",aes(y=number/1000000,fill=type)) +
+  labs(x = "Nome dell'autore", y="Numero di rating", title="Numero di valutazioni e recensioni (in milioni)")+
+  geom_text(aes(label=author_name), stat="count", size=3,angle=90, vjust=-0.5, hjust=-0.2)+
+  theme(axis.text.x=element_blank())
+```
+
+### Gli autori con più ratings sono anche i più recensiti?
+```{r}
+library(modelr)
+rew_rat<- lm(reviews~ratings,authors)
+
+authors %>% add_predictions(rew_rat) %>%
+  ggplot(aes(ratings))+
+    geom_jitter(aes(y=reviews), alpha = 0.5)+
+    geom_line(aes(y=pred), color="red3", size=1.6)
+```
+
+Dall'analisi risultano esserci più recensioni laddove le valutazioni sono in numero minore. Vi sono delle eccezioni, che probabilmente sono quelle precedentemente analizzate.
+Provando ad applicare una scala logaritmica ai dati, si nota che il modello si adatta meglio rispetto alla relazione lineare precedentemente evidenziata.
+
+```{r, warning=FALSE,message=FALSE}
+authors %>% add_predictions(rew_rat) %>%
+  ggplot(aes(ratings))+
+    geom_jitter(aes(y=reviews), alpha=0.5)+
+    geom_line(aes(y=pred), color="red3", size=1.6)+
+    scale_y_log10(limits=c(1,NA))
+```
+
+Alcune recensioni vanno in negativo perché molti libri hanno meno di 10 recensioni. Proviamo a indagare sulla distribuzione dei dati delle reviews:
+
+```{r}
+summary(authors$reviews)
+```
+I dati sono concentrati tra 303 e 17644, mentre il massimo supera i 3 milioni. Ci sono però anche libri che non hanno recensioni.
+
+Proviamo a rappresentare anche i residui:
+```{r}
+authors %>% add_predictions(rew_rat) %>%
+  add_residuals(rew_rat) %>%
+  ggplot(aes(ratings))+
+    geom_ref_line(h=0)+
+    geom_point(aes(y=resid))
+```
+
+Dal grafico dei residui emerge che i dati sono concentrati laddove i ratings e le recensioni sono minoritarie. Inoltre un punto in particolare si discosta dagli altri.
+```{r}
+summary(rew_rat)
+```
+Secondo il modello, la bontà del modello si aggira attorno all'82%.
+
+
+###In che modo il numero di valutazioni influisce sulla valutazione media?
+```{r}
+rating<- authors %>%
+  select(author_name, reviews) %>%
+  left_join(select(goodreads, author_name, author_average_rating)) %>%
+  unique()
+
+
+rating
+ggplot(rating, aes(y=reviews,x=author_average_rating ))+
+  geom_jitter(aes(color=reviews))
+
+summary(rating$author_average_rating)
+
+```
+Come si nota dal grafico, le valutazioni sono elevate, infatti la media è su 4. C'è da notare però che nonostante le valutazioni siano alte, il numero di review è molto basso, quindi chi tende a valutare il libro generalmente non lo recensisce.
+
+###C'è una relazione tra il numero di libri scritti e il successo dell'autore?
+```{r}
+authors %>%
+  arrange(-reviews) %>%
+  ggplot(aes(x = n_books, y=reviews))+
+    geom_bar(stat="identity", aes(fill=reviews))+
+    scale_x_discrete(breaks = c(seq(1,6)))+
+    labs(x="Numero di libri scritti", y="Valutazioni")
+``` 
+
+Sembra che all'aumentare dei libri scritti aumentino anche le valutazioni. Probabilmente perchè gli scrittori sono incentivati a scrivere se ricevono feedback positivi dei precedenti capitoli. Questo ovviamente solo nel caso in cui siano famosi. Come emerge dal grafico ci sono comunque molti autori che pur avendo scritto molti libri non hanno eccellenti valutazioni rispetto ad altri. 
+
+Da notare però che se gli autori che scrivono molti libri sono tra i più recensiti, sono anche una cerchia ristretta, perché la maggioranza degli scrittori si limita a scrivere 1 o 2 libri (media e mediana).
+
+```{r}
+summary(as.integer(authors$n_books))
+authors$n_books = as.factor(authors$n_books)
+authors %>%
+  arrange(-reviews) %>%
+  ggplot(aes(x = n_books))+
+    geom_bar(aes(fill = reviews), stat="count", fill="blue3")+
+    scale_x_discrete(breaks = c(seq(1,6)))+
+    labs(x="Numero di libri scritti", y="Scrittori")+
+    geom_text(aes(label=..count..),stat="count",vjust=-0.2)
+
+
+```
+
+
+```{r}
+ggplot(authors, aes(n_books,reviews))+
+  geom_boxplot(outlier.color = "blue", outlier.shape = NA)+
+  coord_flip()+
+  scale_y_discrete(breaks=seq(1,10,by=2))
+```
+
+Dal boxplot emerge comunque che la mediana aumenta a ogni libro in più scritto. In particolar modo la distribuzione dei dati con 6 libri è più variabile e contiene svariati outlier. 
+
+
+###Analisi sui generi
+```{r, warning=FALSE,message=FALSE}
+library(gridExtra)
+
+par(mfrow = c(2,1))
+
+genres1 <- goodreads %>%
+  count(genre_1) %>%
+  rename(genre = genre_1)
+
+genres2 <- goodreads %>%
+  count(genre_2) %>%
+  rename(genre = genre_2)
+
+genres <- full_join(genres1,genres2, by="genre") %>%
+  mutate(n.x = ifelse(is.na(n.x),0,n.x),
+         n.y = ifelse(is.na(n.y),0,n.y))%>%
+  group_by(genre) %>%
+  summarise(n = n.x+n.y)
+
+loved_genres<- genres %>%
+  arrange(-n) %>%
+  head(10)
+
+hollow_genres <- genres %>%
+  arrange(n) %>%
+  head(10)
+
+loved_genres2<- loved_genres %>%
+  ggplot(aes(x=reorder(genre,n),y=n,fill=reorder(genre,n)))+
+    geom_bar(stat="identity", show.legend = TRUE)+
+    coord_polar(theta="y")+
+    theme_void()+
+    labs(title="Generi più famosi",
+         fill="Genere")
+
+hollow_genres2 <- hollow_genres %>%
+   ggplot(aes(x=reorder(genre,n),y=n,fill=reorder(genre,n)))+
+    geom_bar(stat="identity", show.legend = TRUE)+
+    coord_polar(theta="y")+
+    theme_void()+
+    labs(title="Generi di nicchia",
+         fill="Genere")
+
+grid.arrange(loved_genres2,hollow_genres2,ncol=2)
+```
+
+Dai due grafici a ciambella emergono i generi più letti e quelli più di nicchia, ovvero i cui testi sono rari.
+Per un'analisi più approfondita:
+[Shiny App]("flexdashboardProject.Rmd")
+
+###Gender gap?
+Analizziamo ora il sesso degli scrittori, per analizzare se vi sono più scrittrici o scrittori e se c'è una relazione tra genere e successo.
+
+```{r}
+authors %>%
+  group_by(author_gender) %>%
+  summarise(n=n())
+```
+
+Da una prima analisi emerge che vi sono più scrittori maschi che femmine. Analizziamo ora la relazione tra numero di libri scritti, reviews e genere dello scrittore. 
+```{r}
+
+authors %>%
+  ggplot(aes(x = n_books))+
+    geom_bar(stat="count",position="dodge", aes(fill=author_gender))+
+    labs(x="Numero di libri scritti", y="Scrittori")+
+    geom_text(aes(label=..count..), stat="count",
+              position=position_dodge(width=1))
+
+```
+
+Non sembra esserci una differenza sostanziale, ma proviamo a esplorare la relazione tra numero di reviews e sesso.
+```{r, warning=FALSE, message=FALSE}
+ggplot(authors, aes(x=author_gender, y=reviews, color=author_gender))+
+  geom_boxplot(outlier.size=2)+
+  scale_y_log10()
+
+summary(authors$reviews)
+```
+
+La distribuzione dei dati delle scrittrici sembra essere leggermente superiore rispetto a quella maschile, anche se la mediana sembra coincidere. Gli outlier superiori, quindi gli scrittori di successo, non sembrano differire di numero, mentre quelli inferiori sembrano essere il doppio rispetto agli scrittori maschi. 
+
+```{r}
+
+#Sopra il quantile 75%
+authors[authors$reviews > quantile(authors$reviews,0.75) | authors$reviews < quantile(authors$reviews,0.25) ,] %>%
+  transform(quantile = ifelse(reviews > quantile(authors$reviews,0.75),0.75,0.25)) %>%
+  group_by(author_gender, quantile) %>%
+  summarise(n=n())
+```
+
+La maggioranza dei valori al di fuori del box per i maschi si trova al di sotto del quantile 0.25, mentre per le femmine si trova sopra il quantile 0.75.
+
+Proviamo ad analizzare le frequenze relative:
+```{r}
+n_writers <- nrow(authors)
+
+authors %>%
+  ggplot(aes(x = n_books))+
+    geom_bar(position="dodge", aes(y=..count..,fill=author_gender))+
+    labs(x="Numero di libri scritti", y="Scrittori")
+
+
+```
+
+In termini di frequenze relative si può concludere che il numero di valutazioni.
+
+###Nazionalità degli scrittori
+
+```{r}
+goodreads %>%
+  select(birthplace) %>%
+  count(birthplace) %>%
+  arrange(-n) %>%
+  head(30)
+    
+```
+
+Di molti scrittori non è nota la nazionalità, ma la maggioranza proviene dagli stati uniti. Sembra comunque prevalere la lingua inglese sulle altre, probabilmente perchè l'applicazione è ideata da uno statunitense e pensata per essere monolingua. Tralasciando le nazionalità sconosciute:
+
+```{r}
+top30countries <- goodreads %>%
+  select(birthplace, author_gender) %>%
+  count(birthplace, author_gender) %>%
+  filter(birthplace !="unknown") %>%
+  arrange(-n) %>%
+  head(30)
+
+
+ggplot(top30countries,aes(birthplace,n))+
+  geom_bar(stat="identity", position="dodge", aes(fill=author_gender))+
+  geom_segment(aes(x=birthplace, 
+                   xend=birthplace, 
+                   y=min(n), 
+                   yend=max(n)), 
+               linetype="dashed", 
+               size=0.05,
+               color="grey")+
+  coord_flip()+
+  theme_classic()
+
+```
+
+### Quali sono i libri valutati meglio?
+```{r, warning=FALSE, message=FALSE}
+library(DT)
+
+book_list <- goodreads %>%
+  select(book_title,author_name, book_average_rating,genre_1,genre_2, pages, num_ratings) %>%
+  rename(rating = book_average_rating) %>%
+  arrange(-rating) %>%
+  unique()
+DT::datatable(book_list)
+```
+
+Analizziamo però la relazione tra i rating e il numero di recensioni: se un libro ha poche recensioni, ma positive, il suo rating rimane alto, pur essendo letto da pochi. Se un libro ha molte recensioni, tutte variabili, nonostante abbia successo potrebbe avere dei ratings bassi.
+
+```{r, warning=FALSE, message=FALSE}
+ggplot(goodreads,aes(book_average_rating))+
+  geom_histogram(fill="lightblue")+
+  geom_freqpoly(color="blue")
+
+```
+
+Dal grafico emerge un'asimmetria negativa, che tende a sopravvalutare il libro, svalutando il ratings degli altri. Sembra esserci però una sorta di simmetria attorno al 4.
+
+
+### Correlazione tra rating dell'autore e del singolo libro
+```{r, message=FALSE, warning=FALSE}
+
+rating_cor<- goodreads %>%
+  select(author_average_rating,book_average_rating) %>%
+  mutate(author_average_rating = round(author_average_rating,0),
+         book_average_rating = round(book_average_rating,0)) %>%
+  rename(autore = author_average_rating,libro = book_average_rating)
+
+library(corrplot)
+corrplot(cor(rating_cor),method="color")
+```
+
+Sembra esserci una correlazione tra la valutazione degli scrittori e dei libri, una relazione crescente. Quindi al crescere del rating del libro, aumenta il rating del suo autore.
+
+### Evoluzione del numero di libri nel tempo
+```{r, message=FALSE, warning=FALSE}
+goodreads %>%
+  group_by(year) %>%
+  summarise(n_books = n()) %>%
+  ggplot(aes(year,n_books))+
+    geom_line()+
+    scale_x_continuous()
+
+summary(goodreads$year)
+
+```
+Verso gli anni 2000 c'è stata una crescita esponenziale del numero di libri pubblicati.
+
+### Quali sono i libri più letti?
+```{r}
+top_books<-goodreads %>%
+  select(book_id,book_title,num_ratings) %>%
+  group_by(book_title, book_id) %>%
+  summarise(ratings = sum(num_ratings))%>%
+  arrange(-ratings) %>%
+  left_join(select(goodreads,author_name,book_title)) %>%
+  unique() %>%
+  head(n=20)
+
+DT::datatable(top_books)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(plotly)
+
+top_books_plot<-top_books %>% 
+  left_join(select(authors,author_name,author_gender), by="author_name") %>%
+  ggplot(aes(x=book_title, y=ratings, text=author_name, color=author_gender)) + 
+    geom_point(size=3) + 
+    geom_segment(aes(x=book_title, 
+                     xend=book_title, 
+                     y=0, 
+                     yend=ratings)) + 
+    labs(title="Top books")+
+    theme()+
+    coord_flip()
+
+ggplotly(top_books_plot, tooltip = "text")
+
+```
+
+
+
